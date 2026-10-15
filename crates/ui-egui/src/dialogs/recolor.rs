@@ -695,23 +695,10 @@ fn assign_tab(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog, rows: &mut 
         for (icon, tip, sb) in
             [("arrow-left-right", tl!("Randomly change color order"), false), ("sparkles", tl!("Randomly change saturation and brightness"), true)]
         {
-            if widgets::icon_button_enabled(ui, icon, tip, false, rows.len() > 1 || sb, 24.0).clicked() {
-                let seed = d.f64("__seed", 0.0) as u64 + 1;
-                d.fields.insert("__seed".into(), json!(seed));
-                let p = json!({"map": rows, "order": !sb, "saturationBrightness": sb, "seed": seed});
-                match app.session.execute("recolor.randomize", &p) {
-                    Ok(r) => {
-                        // The rows keep the group colour each took.
-                        let old = std::mem::replace(rows, r["map"].as_array().cloned().unwrap_or_default());
-                        for (n, o) in rows.iter_mut().zip(&old) {
-                            if let Some(src) = o.get("source").filter(|v| !v.is_null()) {
-                                n["source"] = src.clone();
-                            }
-                        }
-                        changed = true;
-                    }
-                    Err(e) => app.status(e.to_string()),
-                }
+            let can = sb || rows.len() > 1 || (active_index(d).is_some() && assign(d).len() > 1);
+            if widgets::icon_button_enabled(ui, icon, tip, false, can, 24.0).clicked() {
+                randomize(app, d, rows, sb);
+                changed = true;
             }
         }
         if widgets::icon_button(ui, "rotate-ccw", tl!("Reset the rows to the artwork's colors"), false, 24.0).clicked() {
@@ -753,6 +740,28 @@ fn assign_tab(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog, rows: &mut 
         ui.end_row();
     });
     changed
+}
+
+/// Randomly change the rows' new colours: their order (`sb` false) or their saturation and
+/// brightness. With an active group, a new order draws from all the group's colours, not only
+/// those the rows have.
+pub(crate) fn randomize(app: &mut VectorcraftApp, d: &mut Dialog, rows: &mut Vec<Value>, sb: bool) {
+    let seed = d.f64("__seed", 0.0) as u64 + 1;
+    d.fields.insert("__seed".into(), json!(seed));
+    let palette = if !sb && active_index(d).is_some() { assign(d) } else { vec![] };
+    let p = json!({"map": rows, "order": !sb, "saturationBrightness": sb, "seed": seed, "palette": palette});
+    match app.session.execute("recolor.randomize", &p) {
+        Ok(r) => {
+            // The rows keep the group colour each took, or take the one they drew.
+            let old = std::mem::replace(rows, r["map"].as_array().cloned().unwrap_or_default());
+            for (n, o) in rows.iter_mut().zip(&old) {
+                if let Some(src) = o.get("source").filter(|v| !v.is_null() && n["source"].is_null()) {
+                    n["source"] = src.clone();
+                }
+            }
+        }
+        Err(e) => app.status(e.to_string()),
+    }
 }
 
 /// The arrow between a row's current and new colours: solid when the row is recoloured, a dashed

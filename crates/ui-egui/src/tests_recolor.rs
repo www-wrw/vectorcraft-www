@@ -304,3 +304,33 @@ fn the_color_groups_buttons_add_save_and_delete_groups_on_ok() {
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(group_names(&app), before);
 }
+
+#[test]
+fn randomizing_order_with_a_group_uses_all_its_colours() {
+    let mut app = app();
+    let ctx = context();
+    art(&mut app, &["#602020", "#704d3a"]);
+    let five = ["#704d3a", "#d7b997", "#602020", "#203050", "#6080a0"];
+    app.run("swatch.newGroup", json!({"name": "Oliver", "colors": five})).unwrap();
+    app.run("ui.recolorDialog", json!({"group": "Oliver"})).unwrap();
+    dialog_frame(&mut app, &ctx);
+    assert_eq!(row_tos(&app).len(), 2, "two art colours, two rows");
+    // The shuffle button, pressed many times, brings every group colour into the rows.
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..40 {
+        set(&mut app, "__seed", json!(seed));
+        let mut d = app.ui.dialog.take().unwrap();
+        let mut rows = field_of(&d, "rows").as_array().unwrap().clone();
+        dialogs::recolor::randomize(&mut app, &mut d, &mut rows, false);
+        d.fields.insert("rows".into(), Value::Array(rows));
+        app.ui.dialog = Some(d);
+        seen.extend(row_tos(&app));
+    }
+    assert_eq!(seen.len(), 5, "{seen:?}");
+    dialogs::confirm(&mut app).unwrap();
+    assert_eq!(group_keys(&app, "Oliver").len(), 5, "the group keeps its five colours");
+}
+
+fn field_of(d: &crate::state::Dialog, k: &str) -> Value {
+    d.fields.get(k).cloned().unwrap_or(Value::Null)
+}

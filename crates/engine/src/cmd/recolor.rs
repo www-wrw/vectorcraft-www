@@ -49,7 +49,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Randomize Colors",
             [],
             None,
-            "{map: rows as recolor.apply, order?: true (shuffle the new colours among the rows that aren't excluded), saturationBrightness?: false (random saturation and brightness, hue kept), seed?: 0} → {map: the rows with their new colours as keys}",
+            "{map: rows as recolor.apply, order?: true (shuffle the new colours among the rows that aren't excluded), palette?: [colour] (with order: the rows draw their new colours from these instead, e.g. the active colour group's, a different one each while they last), saturationBrightness?: false (random saturation and brightness, hue kept), seed?: 0} → {map: the rows with their new colours as keys; with a palette, each row's `source`: the index of the palette colour it took}",
             always,
             randomize
         ),
@@ -437,20 +437,42 @@ fn apply_group_edits(d: &mut Document, edits: &[GroupEditParam], cmd: &str) -> R
 fn randomize(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "recolor.randomize";
     let rows = parse_rows(p, C)?;
+    let palette: Vec<Color> = match p.get("palette") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(cs)) => {
+            cs.iter().map(|v| color_value(v).ok_or_else(|| bad(C, format!("bad colour {v} in palette")))).collect::<Result<_>>()?
+        }
+        Some(v) => return Err(bad(C, format!("`palette` takes a list of colours, not {v}"))),
+    };
     let mut rng = Rng::new(p.get("seed").and_then(Value::as_u64).unwrap_or(0));
-    let mut news: Vec<Color> = rows.iter().filter_map(Row::new_color).collect();
-    if bool_or(p, "order", true) {
-        rng.shuffle(&mut news);
-    }
+    let wanted = rows.iter().filter(|r| r.new_color().is_some()).count();
+    // With a palette (the active colour group's), the rows draw from all its colours: each takes a
+    // different one while they last (then they repeat), noting the one it took as `source`.
+    let mut sources: Vec<Option<usize>> = vec![None; wanted];
+    let mut news: Vec<Color> = if bool_or(p, "order", true) && !palette.is_empty() {
+        let mut order: Vec<usize> = (0..palette.len()).collect();
+        rng.shuffle(&mut order);
+        sources = order.iter().copied().cycle().take(wanted).map(Some).collect();
+        sources.iter().flatten().filter_map(|&j| palette.get(j).copied()).collect()
+    } else {
+        let mut news: Vec<Color> = rows.iter().filter_map(Row::new_color).collect();
+        if bool_or(p, "order", true) {
+            rng.shuffle(&mut news);
+        }
+        news
+    };
     if bool_or(p, "saturationBrightness", false) {
         news = news.into_iter().map(|c| rng.saturation_brightness(c)).collect();
     }
-    let mut news = news.into_iter();
+    let mut news = news.into_iter().zip(sources);
     let map: Vec<Value> = rows
         .iter()
         .map(|r| {
-            let to = if r.new_color().is_some() { news.next() } else { r.to };
+            let (to, source) = if r.new_color().is_some() { news.next().map_or((None, None), |(c, s)| (Some(c), s)) } else { (r.to, None) };
             let mut row = json!({"from": r.from.iter().map(Match::to_json).collect::<Vec<_>>(), "to": to.as_ref().map(key_str)});
+            if let Some(j) = source {
+                row["source"] = json!(j);
+            }
             if r.exclude {
                 row["exclude"] = json!(true);
             }
