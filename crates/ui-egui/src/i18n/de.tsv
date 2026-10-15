@@ -4335,3 +4335,12 @@ theme	Appearance	Erscheinungsbild
 	Softness	Weichheit
 	Ambient Light	Umgebungslicht
 	Light behind the object	Licht hinter dem Objekt
+	Color Groups	Farbgruppen
+	Get Colors from Selected Art	Farben aus ausgewähltem Bildmaterial übernehmen
+	Save Changes to Color Group	Änderungen in Farbgruppe speichern
+	Delete Color Group	Farbgruppe löschen
+	Sort:	Sortieren:
+	Hue - forward	Farbton – vorwärts
+	Hue - backward	Farbton – rückwärts
+	Lightness - dark to light	Helligkeit – dunkel nach hell
+	Lightness - light to dark	Helligkeit – hell nach dunkel

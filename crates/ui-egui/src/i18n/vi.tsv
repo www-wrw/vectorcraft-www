@@ -4362,3 +4362,12 @@ theme	Appearance	Giao diện
 	Softness	Độ mềm
 	Ambient Light	Ánh sáng môi trường
 	Light behind the object	Ánh sáng phía sau đối tượng
+	Color Groups	Các nhóm màu
+	Get Colors from Selected Art	Lấy màu từ hình đã chọn
+	Save Changes to Color Group	Lưu thay đổi vào nhóm màu
+	Delete Color Group	Xóa nhóm màu
+	Sort:	Sắp xếp:
+	Hue - forward	Sắc độ - xuôi
+	Hue - backward	Sắc độ - ngược
+	Lightness - dark to light	Độ sáng - tối đến sáng
+	Lightness - light to dark	Độ sáng - sáng đến tối

@@ -210,6 +210,110 @@ impl Method {
     }
 }
 
+/// The order of Recolor Artwork's rows, and of a colour group's colours when they are assigned to
+/// them: as the art uses them (most used first), round the colour wheel or by lightness. Rows and
+/// colours sorted the same way pair up ([`pair`]), so the darkest art colour takes the darkest
+/// group colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// The art's order (most used first); a group's colours in their own order.
+    #[default]
+    None,
+    /// Round the wheel from red through yellow, green and blue; neutrals last, dark to light.
+    HueForward,
+    /// Round the wheel the other way, from red through magenta and blue; neutrals last.
+    HueBackward,
+    /// Darkest first (Lab lightness).
+    DarkToLight,
+    /// Lightest first.
+    LightToDark,
+}
+
+/// Lab chroma below which a colour counts as a neutral (it has no hue to sort by).
+const NEUTRAL_CHROMA: f32 = 4.0;
+
+impl Sort {
+    pub const ALL: [Sort; 5] = [Sort::None, Sort::HueForward, Sort::HueBackward, Sort::DarkToLight, Sort::LightToDark];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Sort::None => "none",
+            Sort::HueForward => "hueForward",
+            Sort::HueBackward => "hueBackward",
+            Sort::DarkToLight => "darkToLight",
+            Sort::LightToDark => "lightToDark",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::None => "None",
+            Sort::HueForward => "Hue - forward",
+            Sort::HueBackward => "Hue - backward",
+            Sort::DarkToLight => "Lightness - dark to light",
+            Sort::LightToDark => "Lightness - light to dark",
+        }
+    }
+    /// A sort from its id or label (case, spaces and punctuation ignored).
+    pub fn parse(s: &str) -> Option<Self> {
+        let key = |x: &str| x.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let want = key(s);
+        Self::ALL.into_iter().find(|m| key(m.id()) == want || key(m.label()) == want)
+    }
+
+    /// The indices of `colors` in this order (stable: colours with equal keys keep their order;
+    /// `None` keeps them all as they are).
+    pub fn order(self, colors: &[Color]) -> Vec<usize> {
+        let mut keyed: Vec<((f32, f32), usize)> = colors.iter().enumerate().map(|(i, c)| (self.key(*c), i)).collect();
+        if self != Sort::None {
+            keyed.sort_by(|(a, _), (b, _)| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        }
+        keyed.into_iter().map(|(_, i)| i).collect()
+    }
+
+    /// The sort key of `c`: (primary, tie-break), smaller first.
+    fn key(self, c: Color) -> (f32, f32) {
+        if self == Sort::None {
+            return (0.0, 0.0);
+        }
+        let lab = c.to_lab();
+        let l = if lab.l.is_finite() { lab.l } else { 0.0 };
+        match self {
+            Sort::None => (0.0, 0.0),
+            Sort::DarkToLight => (l, 0.0),
+            Sort::LightToDark => (-l, 0.0),
+            Sort::HueForward | Sort::HueBackward => {
+                let chroma = lab.chroma();
+                if chroma.is_nan() || chroma < NEUTRAL_CHROMA {
+                    // Neutrals after every hue, dark to light.
+                    return (f32::MAX, l);
+                }
+                let h = c.to_hsb()[0];
+                let h = if h.is_finite() { h.rem_euclid(360.0) } else { 0.0 };
+                (if self == Sort::HueBackward { (360.0 - h).rem_euclid(360.0) } else { h }, l)
+            }
+        }
+    }
+}
+
+/// Pair the colours of `rows` (one per row) with the new colours `assign`. Both are put in `sort`
+/// order (`None` keeps them as they are); then the k-th row takes the k-th colour. With a sort and
+/// more colours than rows, the rows take colours spread evenly over the sorted range, so three
+/// rows given a five-colour group sorted by lightness take its darkest, middle and lightest.
+/// Returns, for each row, the index in `assign` of the colour it takes (`None` when there are
+/// more rows than colours).
+pub fn pair(rows: &[Color], assign: &[Color], sort: Sort) -> Vec<Option<usize>> {
+    let (n, m) = (rows.len(), assign.len());
+    let color_order = sort.order(assign);
+    let mut out = vec![None; n];
+    for (k, r) in sort.order(rows).into_iter().enumerate() {
+        let j = if sort == Sort::None || m <= n || n < 2 { k } else { ((k * (m - 1)) as f32 / (n - 1) as f32).round() as usize };
+        if let Some(slot) = out.get_mut(r) {
+            *slot = color_order.get(j).copied();
+        }
+    }
+    out
+}
+
 fn mean_l(labs: &[(Color, Lab)]) -> f32 {
     labs.iter().map(|x| x.1.l).sum::<f32>() / labs.len().max(1) as f32
 }
@@ -488,6 +592,41 @@ mod tests {
         }
         assert_eq!(Method::parse("tints & shades"), Some(Method::TintsShades));
         assert_eq!(Method::parse("nope"), None);
+    }
+
+    #[test]
+    fn sorts_parse_and_order_by_hue_or_lightness() {
+        for s in Sort::ALL {
+            assert_eq!(Sort::parse(s.id()), Some(s));
+            assert_eq!(Sort::parse(s.label()), Some(s));
+        }
+        assert_eq!(Sort::parse("nope"), None);
+        let (red, green, blue, gray) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.8, 0.0), Color::rgb(0.0, 0.0, 1.0), Color::gray(0.5));
+        let cs = [gray, blue, red, green];
+        assert_eq!(Sort::None.order(&cs), [0, 1, 2, 3]);
+        assert_eq!(Sort::HueForward.order(&cs), [2, 3, 1, 0], "red, green, blue, then the neutral");
+        assert_eq!(Sort::HueBackward.order(&cs), [2, 1, 3, 0], "red, blue, green, then the neutral");
+        let (dark, mid, light) = (Color::rgb(0.1, 0.1, 0.3), Color::rgb(0.5, 0.2, 0.2), Color::rgb(0.9, 0.9, 0.6));
+        assert_eq!(Sort::DarkToLight.order(&[light, dark, mid]), [1, 2, 0]);
+        assert_eq!(Sort::LightToDark.order(&[light, dark, mid]), [0, 2, 1]);
+    }
+
+    #[test]
+    fn pairing_matches_rows_and_group_colours_in_sort_order() {
+        let g = |v: f32| Color::gray(v);
+        // Art from light to dark; a group from dark to light.
+        let rows = [g(0.1), g(0.5), g(0.9)];
+        let group = [g(0.95), g(0.6), g(0.2)];
+        assert_eq!(pair(&rows, &group, Sort::None), [Some(0), Some(1), Some(2)], "in order");
+        // Gray k is ink: 0.9 is the darkest. Darkest row takes the darkest group colour.
+        assert_eq!(pair(&rows, &group, Sort::DarkToLight), [Some(2), Some(1), Some(0)]);
+        assert_eq!(pair(&rows, &group, Sort::LightToDark), [Some(2), Some(1), Some(0)], "either direction pairs alike");
+        // More colours than rows: spread over the range. Fewer: the extra rows take none.
+        let five = [g(0.0), g(0.25), g(0.5), g(0.75), g(1.0)];
+        assert_eq!(pair(&[g(0.2), g(0.8)], &five, Sort::DarkToLight), [Some(0), Some(4)]);
+        assert_eq!(pair(&[g(0.2), g(0.8)], &five, Sort::None), [Some(0), Some(1)]);
+        assert_eq!(pair(&rows, &[g(0.3)], Sort::DarkToLight), [None, None, Some(0)], "the darkest row takes it");
+        assert_eq!(pair(&[], &five, Sort::DarkToLight), []);
     }
 
     #[test]

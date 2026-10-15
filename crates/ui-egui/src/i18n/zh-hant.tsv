@@ -3741,3 +3741,12 @@ lighting	Light	光源
 	Softness	柔和度
 	Ambient Light	環境光
 	Light behind the object	光源位於物件後方
+	Color Groups	顏色群組
+	Get Colors from Selected Art	從選取的圖稿取得顏色
+	Save Changes to Color Group	將變更儲存至顏色群組
+	Delete Color Group	刪除顏色群組
+	Sort:	排序：
+	Hue - forward	色相 - 正向
+	Hue - backward	色相 - 反向
+	Lightness - dark to light	明度 - 從暗到亮
+	Lightness - light to dark	明度 - 從亮到暗
