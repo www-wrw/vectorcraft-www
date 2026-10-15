@@ -202,3 +202,105 @@ fn a_group_keeps_the_colours_no_art_row_took() {
     assert_eq!((&after[0], &after[1]), (&before[0], &json!("rgb 1 2 3")));
     assert_eq!(after[2..], before[2..]);
 }
+
+fn hexes(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|k| vectorcraft_engine::cmd::color_value(k).unwrap().to_hex()).collect()
+}
+
+fn row_tos(app: &VectorcraftApp) -> Vec<String> {
+    field(app, "rows").as_array().unwrap().iter().map(|r| vectorcraft_engine::cmd::color_value(&r["to"]).unwrap().to_hex()).collect()
+}
+
+fn act(app: &mut VectorcraftApp, a: dialogs::recolor::GroupAction) {
+    let mut d = app.ui.dialog.take().unwrap();
+    dialogs::recolor::group_action(app, &mut d, a);
+    app.ui.dialog = Some(d);
+}
+
+fn group_names(app: &VectorcraftApp) -> Vec<String> {
+    app.session.doc().unwrap().doc.swatch_groups.iter().map(|g| g.name.clone()).collect()
+}
+
+#[test]
+fn clicking_a_group_in_the_color_groups_list_pairs_its_colours_by_lightness() {
+    let mut app = app();
+    let ctx = context();
+    art(&mut app, &["#f0c0c0", "#c04040", "#400000"]);
+    app.run("swatch.newGroup", json!({"name": "Blues", "colors": ["#e0e0ff", "#202060", "#8080c0"]})).unwrap();
+    let blues = group_keys(&app, "Blues");
+    app.run("ui.recolorDialog", json!({})).unwrap();
+    set(&mut app, "sort", json!("darkToLight"));
+    dialog_frame(&mut app, &ctx);
+    assert_eq!(row_tos(&app), ["#400000", "#c04040", "#f0c0c0"], "rows dark to light, their own colours");
+    let i = field(&app, "__groups").as_array().unwrap().iter().position(|g| g["name"] == "Blues").expect("the document's groups are listed");
+    // The centred window takes a few frames to settle its size (and so its place).
+    let row = |ctx: &egui::Context| ctx.read_response(egui::Id::new(("recolor-group", i))).map(|r| r.rect);
+    let mut last = None;
+    for _ in 0..20 {
+        dialog_frame(&mut app, &ctx);
+        if row(&ctx).is_some() && row(&ctx) == last {
+            break;
+        }
+        last = row(&ctx);
+    }
+    let at = last.expect("drawn").center();
+    let time = ctx.input(|i| i.time) + 1.0;
+    frame(&mut app, &ctx, press(at, 1), time, |app, ui| dialogs::show(app, ui.ctx()));
+    assert_eq!((field(&app, "group"), field(&app, "groupName")), (json!("Blues"), json!("Blues")));
+    dialog_frame(&mut app, &ctx);
+    assert_eq!(row_tos(&app), ["#202060", "#8080c0", "#e0e0ff"], "the darkest art colour takes the darkest group colour");
+    let undo = app.session.doc().unwrap().history.undo.len();
+    dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1);
+    let used = app.session.execute("recolor.colors", &json!({})).unwrap()["colors"].clone();
+    let mut used: Vec<String> = used.as_array().unwrap().iter().map(|c| c["hex"].as_str().unwrap().to_string()).collect();
+    used.sort();
+    assert_eq!(used, ["#202060", "#8080c0", "#e0e0ff"]);
+    assert_eq!(group_keys(&app, "Blues"), blues, "the group keeps its colours in its own order");
+}
+
+#[test]
+fn the_color_groups_buttons_add_save_and_delete_groups_on_ok() {
+    use dialogs::recolor::GroupAction;
+    let mut app = app();
+    let ctx = context();
+    art(&mut app, &["#ff0000", "#00ff00", "#0000ff"]);
+    let before = group_names(&app);
+    app.run("ui.recolorDialog", json!({})).unwrap();
+    dialog_frame(&mut app, &ctx);
+    // A new group of the new colours becomes the active group.
+    act(&mut app, GroupAction::New);
+    assert_eq!(field(&app, "group"), "Color Group");
+    let new = field(&app, "__groups").as_array().unwrap().last().unwrap().clone();
+    assert_eq!(hexes(&new["colors"]), row_tos(&app));
+    // Edit a row, save it into the group under a new name, then pick another group and back.
+    let mut rows = field(&app, "rows");
+    rows[0]["to"] = json!("rgb 10 20 30");
+    set(&mut app, "rows", rows);
+    set(&mut app, "groupName", json!("Mine"));
+    act(&mut app, GroupAction::Save);
+    let n = field(&app, "__groups").as_array().unwrap().len();
+    act(&mut app, GroupAction::Pick(0));
+    dialog_frame(&mut app, &ctx);
+    act(&mut app, GroupAction::Pick(n - 1));
+    dialog_frame(&mut app, &ctx);
+    assert_eq!(field(&app, "group"), "Mine");
+    assert!(row_tos(&app).contains(&"#0a141e".to_string()), "the saved colours came back: {:?}", row_tos(&app));
+    // Delete the first group (Grays), back to the art's colours, then OK.
+    act(&mut app, GroupAction::Pick(0));
+    act(&mut app, GroupAction::Delete);
+    assert!(field(&app, "group").is_null());
+    act(&mut app, GroupAction::FromArt);
+    dialog_frame(&mut app, &ctx);
+    assert_eq!(row_tos(&app).len(), 3);
+    let undo = app.session.doc().unwrap().history.undo.len();
+    dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+    let mut want = before[1..].to_vec();
+    want.push("Mine".into());
+    assert_eq!(group_names(&app), want);
+    let mine: Vec<String> = group_keys(&app, "Mine").iter().map(|k| vectorcraft_engine::cmd::color_value(k).unwrap().to_hex()).collect();
+    assert_eq!(mine[0], "#0a141e");
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(group_names(&app), before);
+}

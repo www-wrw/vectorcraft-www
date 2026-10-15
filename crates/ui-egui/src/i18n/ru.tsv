@@ -4376,3 +4376,12 @@ lighting	Light	Свет
 	Softness	Мягкость
 	Ambient Light	Окружающий свет
 	Light behind the object	Свет позади объекта
+	Color Groups	Цветовые группы
+	Get Colors from Selected Art	Взять цвета из выделенного объекта
+	Save Changes to Color Group	Сохранить изменения в цветовой группе
+	Delete Color Group	Удалить цветовую группу
+	Sort:	Сортировка:
+	Hue - forward	Тон — вперёд
+	Hue - backward	Тон — назад
+	Lightness - dark to light	Светлота — от тёмного к светлому
+	Lightness - light to dark	Светлота — от светлого к тёмному

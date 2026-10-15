@@ -6,12 +6,13 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use vectorcraft_color::recolor::{ColorKey, Method, Preserve, Rng, RowMap, cluster};
-use vectorcraft_color::{Color, Paint};
+use vectorcraft_color::recolor::{ColorKey, Method, Preserve, Rng, RowMap, Sort, cluster, pair};
+use vectorcraft_color::{Color, Paint, SwatchGroup};
 use vectorcraft_doc::swatches::node_colors;
 use vectorcraft_doc::{AppearanceItem, Document, NodeId, NodeKind};
 
 use super::colorcmds::{Recolor, Scope};
+use super::swatch::GroupEdit;
 use super::*;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -30,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Recolor Artwork",
             ["Edit", "Edit Colors"],
             None,
-            "{map: rows [{from: [colour keys (recolor.colors) or \"#rrggbb\" (every colour shown as that hex)], to: colour (hex, key, {c,m,y,k} or {l,a,b}) | null, exclude?: false (the row's colours are kept)}] | {\"key or #rrggbb\": colour, …} (one row per colour), method?: \"exact\" (default)|\"preserveTints\"|\"scaleTints\"|\"tintsShades\"|\"hueShift\" (how a row's colours take its new colour, relative to the row's darkest, average or most saturated colour), limitTo?: swatch library id or name; or \"document\" (the document's swatches): new colours snap to its nearest colour, group?: colour group to rewrite, groupColors?: [colour] (what `group` is rewritten with; default: the rows' new colours, in order, excluded rows left out), rename?: the group's new name, includeImages?: true, includePatterns?: true} recolour the selection (gradients, text, meshes, image pixels and pattern tiles included; each new colour keeps the model of the one it replaces) and the group, as one undo step → {changed}",
+            "{map: rows [{from: [colour keys (recolor.colors) or \"#rrggbb\" (every colour shown as that hex)], to: colour (hex, key, {c,m,y,k} or {l,a,b}) | null, exclude?: false (the row's colours are kept)}] | {\"key or #rrggbb\": colour, …} (one row per colour), method?: \"exact\" (default)|\"preserveTints\"|\"scaleTints\"|\"tintsShades\"|\"hueShift\" (how a row's colours take its new colour, relative to the row's darkest, average or most saturated colour), limitTo?: swatch library id or name; or \"document\" (the document's swatches): new colours snap to its nearest colour, group?: colour group to rewrite, groupColors?: [colour] (what `group` is rewritten with; default: the rows' new colours, in order, excluded rows left out), rename?: the group's new name, groupEdits?: [{group?: existing colour group (omitted: a new group), name?: its (new) name, colors?: [colour] (as swatch.editGroup), delete?: false}] (Recolor Artwork's Color Groups list: groups deleted, rewritten or added before `group` is rewritten; a new group named like `group` is the one `group` rewrites), includeImages?: true, includePatterns?: true} recolour the selection (gradients, text, meshes, image pixels and pattern tiles included; each new colour keeps the model of the one it replaces) and the groups, as one undo step → {changed, groups: {name given: name it got} for the new groups}",
             has_doc,
             apply
         ),
@@ -39,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reduce Colors",
             [],
             None,
-            "{colors?: n (rows; default: one per colour, with the tints of a global swatch in its row), method?: as recolor.apply; default scaleTints (picks each row's colour), preserve?: {white?: true, black?: true, grays?: false} (left out of the rows), limitTo?: as recolor.apply (new colours snap to it)} group the selection's colours into rows of similar colours (k-means in Lab, weighted by use) → {map: [{from: [keys, the row's colour first], to: key}], preserved: [keys], method}",
+            "{colors?: n (rows; default: one per colour, with the tints of a global swatch in its row), method?: as recolor.apply; default scaleTints (picks each row's colour), preserve?: {white?: true, black?: true, grays?: false} (left out of the rows), limitTo?: as recolor.apply (new colours snap to it), sort?: \"none\" (default: most used first)|\"hueForward\"|\"hueBackward\"|\"darkToLight\"|\"lightToDark\" (the rows' order, by their colour; neutrals last by hue), assign?: [colour] (new colours for the rows, e.g. a colour group's: sorted the same way as the rows and paired with them, the darkest row taking the darkest colour; with more colours than rows the rows take colours spread over the sorted range; without a sort the k-th row takes the k-th colour; a row past the last colour keeps its own)} group the selection's colours into rows of similar colours (k-means in Lab, weighted by use) → {map: [{from: [keys, the row's colour first], to: key, source?: index in `assign` of the colour the row took}], preserved: [keys], method, sort}",
             has_selection,
             reduce
         ),
@@ -134,6 +135,17 @@ fn method_param(p: &Value, cmd: &str, default: Method) -> Result<Method> {
     }
 }
 
+/// The `sort` parameter (none without one).
+fn sort_param(p: &Value, cmd: &str) -> Result<Sort> {
+    match str_param(p, "sort") {
+        None => Ok(Sort::None),
+        Some(m) => Sort::parse(m).ok_or_else(|| {
+            let ids: Vec<&str> = Sort::ALL.iter().map(|m| m.id()).collect();
+            bad(cmd, format!("unknown sort `{m}` ({})", ids.join("|")))
+        }),
+    }
+}
+
 fn key_str(c: &Color) -> Value {
     json!(ColorKey::of(c).to_string())
 }
@@ -142,6 +154,14 @@ fn reduce(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "recolor.reduce";
     let method = method_param(p, C, Method::ScaleTints)?;
     let palette = super::swatchlib::limit_param(s, p, C)?;
+    let sort = sort_param(p, C)?;
+    let assign: Option<Vec<Color>> = match p.get("assign") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(cs)) => {
+            Some(cs.iter().map(|v| color_value(v).ok_or_else(|| bad(C, format!("bad colour {v} in assign")))).collect::<Result<_>>()?)
+        }
+        Some(v) => return Err(bad(C, format!("`assign` takes a list of colours, not {v}"))),
+    };
     let def = Preserve::default();
     let flag = |k: &str, d: bool| p.get("preserve").map_or(d, |v| bool_or(v, k, d));
     let preserve = Preserve { white: flag("white", def.white), black: flag("black", def.black), grays: flag("grays", def.grays) };
@@ -164,20 +184,38 @@ fn reduce(s: &mut Session, p: &Value) -> Result<Value> {
         }
         _ => units,
     };
-    let map: Vec<Value> = rows
+    // Each row's colours, the row's colour first, in `sort` order.
+    let mut rows: Vec<(Vec<Color>, Color)> = rows
         .iter()
         .map(|row| {
             let mut from = unit_colors(row);
             let key = method.key_color(&from).unwrap_or_default();
-            // The row's colour first.
             if let Some(i) = from.iter().position(|c| *c == key) {
                 from[..=i].rotate_right(1);
             }
-            let to = palette.as_ref().map_or(key, |pl| pl.nearest(key));
-            json!({"from": from.iter().map(key_str).collect::<Vec<_>>(), "to": key_str(&to)})
+            (from, key)
         })
         .collect();
-    Ok(json!({"map": map, "preserved": kept.iter().map(|u| key_str(&u.color)).collect::<Vec<_>>(), "method": method.id()}))
+    let keys: Vec<Color> = rows.iter().map(|r| r.1).collect();
+    let order = sort.order(&keys);
+    rows = order.iter().filter_map(|&i| rows.get(i).cloned()).collect();
+    let keys: Vec<Color> = rows.iter().map(|r| r.1).collect();
+    let sources = assign.as_ref().map(|a| pair(&keys, a, sort));
+    let map: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (from, key))| {
+            let source = sources.as_ref().and_then(|s| s.get(i).copied().flatten());
+            let new = source.and_then(|j| assign.as_ref().and_then(|a| a.get(j).copied())).unwrap_or(*key);
+            let to = palette.as_ref().map_or(new, |pl| pl.nearest(new));
+            let mut row = json!({"from": from.iter().map(key_str).collect::<Vec<_>>(), "to": key_str(&to)});
+            if let Some(j) = source {
+                row["source"] = json!(j);
+            }
+            row
+        })
+        .collect();
+    Ok(json!({"map": map, "preserved": kept.iter().map(|u| key_str(&u.color)).collect::<Vec<_>>(), "method": method.id(), "sort": sort.id()}))
 }
 
 /// A current colour of a row: an exact colour, or every colour shown as a hex.
@@ -295,7 +333,8 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let ids = s.doc()?.selection.objects.clone();
     let group = str_param(p, "group");
-    if ids.is_empty() && group.is_none() {
+    let edits = group_edits(p, C)?;
+    if ids.is_empty() && group.is_none() && edits.is_empty() {
         return Err(bad(C, "select artwork to recolour, or give a colour `group`"));
     }
     let map = ColorMap::new(&rows, method);
@@ -312,15 +351,87 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         None => rows.iter().filter_map(Row::new_color).collect(),
     };
     let rename = str_param(p, "rename");
-    let (changed, edit) = s.edit(label, |d, _| {
+    let (changed, done, names) = s.edit(label, |d, _| {
         let changed = Recolor::new(scope, &f).run(d, &ids);
-        let edit = group.map(|g| super::swatch::rewrite_group(d, g, &new, rename, C)).transpose()?;
-        Ok((changed, edit))
+        let (mut done, names) = apply_group_edits(d, &edits, C)?;
+        // `group` may be one of the groups just added (under the name it got).
+        let group = group.map(|g| names.get(g).and_then(Value::as_str).unwrap_or(g));
+        if let Some(g) = group {
+            done.push(super::swatch::rewrite_group(d, g, &new, rename, C)?);
+        }
+        Ok((changed, done, names))
     })?;
-    if let Some(e) = edit {
-        e.defaults(s);
+    done.iter().for_each(|e| e.defaults(s));
+    Ok(json!({ "changed": changed, "groups": names }))
+}
+
+/// One entry of `groupEdits`: an existing colour group to delete or rewrite, or a new one.
+struct GroupEditParam {
+    group: Option<String>,
+    name: Option<String>,
+    colors: Option<Vec<Color>>,
+    delete: bool,
+}
+
+/// The `groupEdits` parameter.
+fn group_edits(p: &Value, cmd: &str) -> Result<Vec<GroupEditParam>> {
+    let Some(v) = p.get("groupEdits").filter(|v| !v.is_null()) else { return Ok(vec![]) };
+    let list = v.as_array().ok_or_else(|| bad(cmd, "`groupEdits` takes a list of {group?, name?, colors?, delete?}"))?;
+    list.iter()
+        .map(|e| {
+            let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+            let colors = match e.get("colors") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(cs)) => Some(
+                    cs.iter().map(|v| color_value(v).ok_or_else(|| bad(cmd, format!("bad colour {v} in groupEdits")))).collect::<Result<Vec<_>>>()?,
+                ),
+                Some(v) => return Err(bad(cmd, format!("groupEdits: `colors` takes a list of colours, not {v}"))),
+            };
+            let g = GroupEditParam { group: text("group"), name: text("name"), colors, delete: bool_or(e, "delete", false) };
+            if g.group.is_none() && g.delete {
+                return Err(bad(cmd, "groupEdits: `delete` needs the `group` to delete"));
+            }
+            Ok(g)
+        })
+        .collect()
+}
+
+/// Apply `groupEdits` to `d`: deletions, then rewrites and renames of existing groups, then new
+/// groups (named after the given name, made unique). Returns the edits (for the default paints)
+/// and the names the new groups got, by the name they were given.
+fn apply_group_edits(d: &mut Document, edits: &[GroupEditParam], cmd: &str) -> Result<(Vec<GroupEdit>, serde_json::Map<String, Value>)> {
+    let mut done = vec![];
+    let mut names = serde_json::Map::new();
+    for e in edits.iter().filter(|e| e.delete) {
+        let Some(g) = e.group.as_deref() else { continue };
+        // Rewriting with no colours drops its swatches and unlinks the art linked to them.
+        done.push(super::swatch::rewrite_group(d, g, &[], None, cmd)?);
+        d.swatch_groups.retain(|x| x.name != g);
     }
-    Ok(json!({ "changed": changed }))
+    for e in edits.iter().filter(|e| !e.delete) {
+        let Some(g) = e.group.as_deref() else { continue };
+        let colors = match &e.colors {
+            Some(cs) => cs.clone(),
+            None => d
+                .swatch_groups
+                .iter()
+                .find(|x| x.name == g)
+                .ok_or_else(|| bad(cmd, format!("no colour group `{g}`")))?
+                .swatches
+                .iter()
+                .filter_map(|w| w.paint.color())
+                .collect(),
+        };
+        done.push(super::swatch::rewrite_group(d, g, &colors, e.name.as_deref(), cmd)?);
+    }
+    for e in edits.iter().filter(|e| e.group.is_none()) {
+        let given = e.name.clone().unwrap_or_else(|| "Color Group".into());
+        let name = d.free_swatch_name(&given);
+        d.swatch_groups.push(SwatchGroup { name: name.clone(), swatches: vec![] });
+        done.push(super::swatch::rewrite_group(d, &name, e.colors.as_deref().unwrap_or_default(), None, cmd)?);
+        names.insert(given, json!(name));
+    }
+    Ok((done, names))
 }
 
 fn randomize(_: &mut Session, p: &Value) -> Result<Value> {

@@ -4775,3 +4775,12 @@ imageTrace	Outline	Körvonal
 	Softness	Lágyság
 	Ambient Light	Környezeti fény
 	Light behind the object	Fény az objektum mögött
+	Color Groups	Színcsoportok
+	Get Colors from Selected Art	Színek átvétele a kijelölt grafikából
+	Save Changes to Color Group	Módosítások mentése a színcsoportba
+	Delete Color Group	Színcsoport törlése
+	Sort:	Rendezés:
+	Hue - forward	Színárnyalat – előre
+	Hue - backward	Színárnyalat – hátra
+	Lightness - dark to light	Világosság – sötéttől világosig
+	Lightness - light to dark	Világosság – világostól sötétig

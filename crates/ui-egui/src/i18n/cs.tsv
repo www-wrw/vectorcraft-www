@@ -4808,3 +4808,12 @@ mark-style	Japanese	Japonské
 	Softness	Měkkost
 	Ambient Light	Okolní světlo
 	Light behind the object	Světlo za objektem
+	Color Groups	Skupiny barev
+	Get Colors from Selected Art	Získat barvy z vybrané kresby
+	Save Changes to Color Group	Uložit změny do skupiny barev
+	Delete Color Group	Odstranit skupinu barev
+	Sort:	Řadit:
+	Hue - forward	Odstín – dopředu
+	Hue - backward	Odstín – dozadu
+	Lightness - dark to light	Světlost – od tmavé ke světlé
+	Lightness - light to dark	Světlost – od světlé k tmavé

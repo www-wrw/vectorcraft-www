@@ -4344,3 +4344,12 @@ lighting	Light	광원
 	Softness	부드러움
 	Ambient Light	주변광
 	Light behind the object	개체 뒤의 조명
+	Color Groups	색상 그룹
+	Get Colors from Selected Art	선택한 아트워크에서 색상 가져오기
+	Save Changes to Color Group	색상 그룹에 변경 사항 저장
+	Delete Color Group	색상 그룹 삭제
+	Sort:	정렬:
+	Hue - forward	색조 - 정방향
+	Hue - backward	색조 - 역방향
+	Lightness - dark to light	밝기 - 어두운 색에서 밝은 색으로
+	Lightness - light to dark	밝기 - 밝은 색에서 어두운 색으로

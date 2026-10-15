@@ -4360,3 +4360,12 @@ lighting	Light	Світло
 	Softness	М'якість
 	Ambient Light	Навколишнє світло
 	Light behind the object	Світло позаду об'єкта
+	Color Groups	Колірні групи
+	Get Colors from Selected Art	Взяти кольори з виділеного об’єкта
+	Save Changes to Color Group	Зберегти зміни в колірній групі
+	Delete Color Group	Видалити колірну групу
+	Sort:	Сортування:
+	Hue - forward	Тон — уперед
+	Hue - backward	Тон — назад
+	Lightness - dark to light	Світлота — від темного до світлого
+	Lightness - light to dark	Світлота — від світлого до темного

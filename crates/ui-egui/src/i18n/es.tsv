@@ -4749,3 +4749,12 @@ mark-style	Japanese	Japonesas
 	Softness	Suavidad
 	Ambient Light	Luz ambiental
 	Light behind the object	Luz detrás del objeto
+	Color Groups	Grupos de colores
+	Get Colors from Selected Art	Obtener colores de la ilustración seleccionada
+	Save Changes to Color Group	Guardar cambios en el grupo de colores
+	Delete Color Group	Eliminar grupo de colores
+	Sort:	Ordenar:
+	Hue - forward	Tono: hacia delante
+	Hue - backward	Tono: hacia atrás
+	Lightness - dark to light	Luminosidad: de oscuro a claro
+	Lightness - light to dark	Luminosidad: de claro a oscuro

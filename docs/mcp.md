@@ -1079,9 +1079,15 @@ patterns out. The Blend commands also grade gradient meshes, which keep their sh
 Recolor Artwork keys colours by identity, not hex: `recolor.colors` lists each colour's `key` (`"rgb 255 0 0"`,
 `"cmyk 0 100 100 0"`, `"gray 40"`, `"lab 55 60 -40"`; RGB in 0–255 levels, CMYK and Gray in percent), so CMYK,
 Lab and RGB colours that look alike stay apart, and every colour parameter also accepts a key.
-`recolor.reduce {colors?, method?, preserve?, limitTo?}` groups the selection's colours into rows of similar colours (k-means in Lab, weighted by use;
+`recolor.reduce {colors?, method?, preserve?, limitTo?, sort?, assign?}` groups the selection's colours into rows of similar colours (k-means in Lab, weighted by use;
 tints of a global swatch share its row; White and Black are preserved by default) and returns a map of rows
-`[{from: [keys], to: key}]` to edit and pass to `recolor.apply {map, method?, limitTo?, group?, groupColors?, rename?}`.
+`[{from: [keys], to: key, source?}]` to edit and pass to `recolor.apply {map, method?, limitTo?, group?, groupColors?, rename?, groupEdits?}`.
+`sort` orders the rows (`hueForward`, `hueBackward`, `darkToLight`, `lightToDark`; default `none`, most used
+first). `assign` gives the rows new colours, such as a colour group's: rows and colours are sorted the same way and
+paired, so the darkest row takes the darkest colour (with more colours than rows, the rows take colours spread over
+the sorted range), and each row's `source` is the index of the colour it took. `groupEdits`
+(`[{group?, name?, colors?, delete?}]`) deletes, rewrites, renames or (without `group`) adds colour groups in the same
+undo step as the recolour.
 `method` says how a row's colours take its new colour: `exact`, `preserveTints` (tints of the row's darkest colour
 stay tints), `scaleTints` (every colour becomes a tint as light, relative to the darkest), `tintsShades` (lighter and
 darker than the row's average become tints and shades) or `hueShift` (the most saturated colour takes the new colour,
@@ -1095,6 +1101,7 @@ group together.
 {"name":"run_command","arguments":{"command":"recolor.reduce","params":{"colors":2,"preserve":{"grays":true}}}}
 {"name":"run_command","arguments":{"command":"recolor.apply","params":{"map":[{"from":["cmyk 0 100 100 0","cmyk 0 40 40 0"],"to":"cmyk 100 50 0 0"}],"method":"scaleTints"}}}
 {"name":"run_command","arguments":{"command":"swatch.editGroup","params":{"group":"Brights","colors":["#ff0000","cmyk 0 0 100 0"]}}}
+{"name":"run_command","arguments":{"command":"recolor.reduce","params":{"sort":"darkToLight","assign":["#202060","#8080c0","#e0e0ff"]}}}
 ```
 
 ## Group, layer and type appearance

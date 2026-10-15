@@ -12,16 +12,26 @@
 //! Opened on colours alone (the Color Guide's Edit or Apply Colors without art), OK saves the new
 //! colours as a colour group named `groupName`.
 //!
+//! Color Groups (beside the tabs): the document's colour groups. Clicking one makes it the active
+//! group: the art is reduced to as many rows as it has colours, which become their new colours,
+//! paired with the rows in Sort order (sorted alike, so the darkest art colour takes the group's
+//! darkest colour). Below the list: Get Colors from Selected Art (back to the art's own colours,
+//! no group), New Color Group (from the new colours), Save Changes to Color Group (the active
+//! group takes the new colours, so they stay when another group is picked) and Delete Color Group.
+//! The list changes are kept in the dialog and made on OK, in the same undo step as the recolour.
+//!
 //! Fields (`ui.dialog.set`): `rows` ([{from: [keys], to: key, exclude?}]), `colors` (null: Auto, or a
 //! count), `method`, `preserveWhite`, `preserveBlack`, `preserveGrays`, `limitTo` (library id,
 //! "document" for the document's swatches, "" for none), `group`, `groupName`, `tab` (`assign` or
-//! `edit`), `rule` (harmony id), `linked`, `preview`. Changing `colors`, a preserve flag or
-//! `limitTo` reduces the rows again.
+//! `edit`), `rule` (harmony id), `linked`, `preview`, `sort` (`none`, `hueForward`, `hueBackward`,
+//! `darkToLight`, `lightToDark`). A row may carry `source`: the index of the active group's colour
+//! it took. Changing `colors`, a preserve flag, `limitTo` or `sort`, or picking a group, reduces the
+//! rows again.
 
 use egui::{Rect, Sense, Ui, pos2, vec2};
 use serde_json::{Value, json};
 use vectorcraft_color::harmony::{Harmony, move_on_wheel};
-use vectorcraft_color::recolor::{ColorKey, Method};
+use vectorcraft_color::recolor::{ColorKey, Method, Sort};
 use vectorcraft_color::{Color, keep_model};
 use vectorcraft_engine::cmd::color_value;
 use vectorcraft_engine::cmd::swatchlib;
@@ -41,8 +51,8 @@ pub(super) const SPEC: DialogSpec = DialogSpec {
     body,
     confirm,
     preview: true,
-    min_width: 540.0,
-    max_width: Some(560.0),
+    min_width: LEFT_W + GROUPS_W + 24.0,
+    max_width: Some(LEFT_W + GROUPS_W + 40.0),
     ..DialogSpec::FORM
 };
 
@@ -54,6 +64,12 @@ const WHEEL: f32 = 220.0;
 /// Height of the rows table, and of either tab (so switching tabs doesn't resize the dialog).
 const TABLE_H: f32 = 220.0;
 const TAB_H: f32 = 400.0;
+/// Width of the tabs' column and of the Color Groups column beside it.
+const LEFT_W: f32 = 530.0;
+const GROUPS_W: f32 = 210.0;
+/// Height of a colour group in the Color Groups list, and of its colour chips.
+const GROUP_ROW_H: f32 = 36.0;
+const GROUP_CHIP: f32 = 13.0;
 const PRESETS: [&str; 5] = ["Custom", "1 Color Job", "2 Color Job", "3 Color Job", "Color Library"];
 
 /// Open Recolor Artwork (`ui.recolorDialog {colors?, library?, group?}`) on the selected art and,
@@ -95,11 +111,20 @@ pub fn open(app: &mut VectorcraftApp, p: &Value) -> Result<Value, String> {
     };
     // Without art the rows are the group's colours, as they are.
     let start: Vec<Value> = if art { vec![] } else { assign.iter().map(|k| json!({"from": [k], "to": k})).collect() };
+    // The Color Groups list starts as the document's groups (`orig`: the name each has there).
+    let groups: Vec<Value> = st
+        .doc
+        .swatch_groups
+        .iter()
+        .map(|g| json!({"name": g.name, "colors": g.swatches.iter().filter_map(|w| w.paint.color()).map(|c| key(&c)).collect::<Vec<_>>(), "orig": g.name}))
+        .collect();
+    let orig: Vec<&str> = st.doc.swatch_groups.iter().map(|g| g.name.as_str()).collect();
     let fields = json!({
         "rows": start, "colors": count, "method": Method::ScaleTints.id(),
         "preserveWhite": true, "preserveBlack": true, "preserveGrays": false, "limitTo": limit,
         "group": group, "groupName": if new_group { Some(NEW_GROUP) } else { group }, "tab": "assign", "rule": Harmony::Complementary.id(), "linked": true,
-        "preview": true, "__art": art, "__assign": assign, "__newGroup": new_group,
+        "preview": true, "sort": Sort::None.id(), "__art": art, "__assign": assign, "__newGroup": new_group,
+        "__groups": groups, "__origGroups": orig,
     });
     let mut d = Dialog::new(KIND, fields);
     // Without art the rows are there from the start: limit them now (art's rows snap as they reduce).
@@ -121,21 +146,42 @@ fn first_library(app: &VectorcraftApp) -> Option<String> {
     colour_libraries(app).into_iter().next().map(|l| l.id)
 }
 
-/// `recolor.reduce` parameters (Method only picks each row's colour, so changing it keeps the rows).
+/// The field that holds the `recolor.reduce` parameters the rows were last reduced with.
+const REDUCED: &str = "__reduced";
+
+/// `recolor.reduce` parameters (Method only picks each row's colour, so changing it keeps the
+/// rows): the new colours to assign are the active group's, or the opener's colours.
 fn reduce_params(d: &Dialog) -> Value {
+    let assign = assign(d);
     json!({
         "colors": d.fields.get("colors").cloned().unwrap_or(Value::Null),
         "preserve": {"white": d.bool("preserveWhite"), "black": d.bool("preserveBlack"), "grays": d.bool("preserveGrays")},
         "limitTo": d.str("limitTo"),
+        "sort": sort(d).id(),
+        "assign": if assign.is_empty() { Value::Null } else { Value::Array(assign) },
     })
 }
 
-/// Reduce the art's colours into rows again when the count, preserve flags or library changed
-/// (assigning a group's colours or the opener's colours as the new colours).
-fn sync(app: &mut VectorcraftApp, d: &mut Dialog) {
-    const DONE: &str = "__reduced";
+fn sort(d: &Dialog) -> Sort {
+    d.fields.get("sort").and_then(Value::as_str).and_then(Sort::parse).unwrap_or_default()
+}
+
+/// The new colours assigned to the rows: the active group's, or the opener's colours.
+fn assign(d: &Dialog) -> Vec<Value> {
+    d.fields.get("__assign").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+/// Take the rows as they are as reduced with the current parameters (they were changed by hand).
+fn mark_reduced(d: &mut Dialog) {
     let sig = reduce_params(d);
-    if !d.bool("__art") || d.fields.get(DONE) == Some(&sig) {
+    d.fields.insert(REDUCED.into(), sig);
+}
+
+/// Reduce the art's colours into rows again when the count, preserve flags, library, sort or the
+/// colours to assign changed (pairing those colours with the rows).
+fn sync(app: &mut VectorcraftApp, d: &mut Dialog) {
+    let sig = reduce_params(d);
+    if !d.bool("__art") || d.fields.get(REDUCED) == Some(&sig) {
         return;
     }
     let mut p = sig.clone();
@@ -143,17 +189,13 @@ fn sync(app: &mut VectorcraftApp, d: &mut Dialog) {
     match app.session.execute("recolor.reduce", &p) {
         Ok(r) => {
             let mut rows = r["map"].as_array().cloned().unwrap_or_default();
-            let assign = d.fields.get("__assign").and_then(Value::as_array).cloned().unwrap_or_default();
-            for (row, to) in rows.iter_mut().zip(assign) {
-                row["to"] = to;
-            }
             snap(app, d, &mut rows);
             d.fields.insert("rows".into(), Value::Array(rows));
             d.fields.insert("__sel".into(), json!([]));
         }
         Err(e) => app.status(e.to_string()),
     }
-    d.fields.insert(DONE.into(), sig);
+    d.fields.insert(REDUCED.into(), sig);
 }
 
 /// With Limit to Library, the rows' new colours snap to the library's nearest colours.
@@ -186,27 +228,279 @@ fn selection(d: &Dialog) -> Vec<usize> {
     d.fields.get("__sel").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|i| i as usize).collect()).unwrap_or_default()
 }
 
-/// `recolor.apply` parameters: the rows, method, library and the group with its new name and
-/// colours: the rows' new colours, then (with art) the group's colours no row took.
+/// `recolor.apply` parameters: the rows, method and library; the changes to the Color Groups list
+/// (`groupEdits`); and the active group with its new name and colours ([`group_colors`]).
 fn apply_params(d: &Dialog) -> Value {
-    let rs = rows(d);
-    let group = d.fields.get("group").and_then(Value::as_str).map(|g| {
-        let rest =
-            d.fields.get("__assign").and_then(Value::as_array).filter(|_| d.bool("__art")).map_or(&[][..], |a| a.get(rs.len()..).unwrap_or_default());
-        let colors: Vec<&Value> = rs.iter().map(|r| &r["to"]).chain(rest).collect();
-        let name = d.str("groupName");
-        let rename = (!name.trim().is_empty() && name != g).then_some(name);
-        json!({"group": g, "groupColors": colors, "rename": rename})
-    });
-    let mut p = json!({"map": rs, "method": d.str("method"), "limitTo": d.str("limitTo")});
-    if let (Some(Value::Object(g)), Some(p)) = (group, p.as_object_mut()) {
-        p.extend(g.into_iter().filter(|(_, v)| !v.is_null()));
+    let (edits, active) = group_plan(d);
+    let mut p = json!({"map": rows(d), "method": d.str("method"), "limitTo": d.str("limitTo")});
+    if !edits.is_empty() {
+        p["groupEdits"] = Value::Array(edits);
+    }
+    if let Some((g, rename)) = active {
+        p["group"] = json!(g);
+        p["groupColors"] = Value::Array(group_colors(d));
+        if let Some(r) = rename {
+            p["rename"] = json!(r);
+        }
     }
     p
 }
 
+/// The active group's colours after the recolour: with art, each colour a row took (its
+/// `source`) replaced by that row's new colour and the others as they were; rows without a
+/// source (e.g. without art) give the rows' new colours, then the group's colours no row took.
+fn group_colors(d: &Dialog) -> Vec<Value> {
+    let rs = rows(d);
+    let mut colors = assign(d);
+    if d.bool("__art") && rs.iter().any(|r| r["source"].is_u64()) {
+        for r in &rs {
+            if let Some(c) = r["source"].as_u64().and_then(|j| colors.get_mut(j as usize)) {
+                *c = r["to"].clone();
+            }
+        }
+        return colors;
+    }
+    let rest = if d.bool("__art") { colors.split_off(rs.len().min(colors.len())) } else { vec![] };
+    rs.iter().map(|r| r["to"].clone()).chain(rest).collect()
+}
+
+/// The Color Groups list.
+fn groups(d: &Dialog) -> Vec<Value> {
+    d.fields.get("__groups").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn group_name(g: &Value) -> &str {
+    g["name"].as_str().unwrap_or_default()
+}
+
+/// The active group's place in the Color Groups list.
+fn active_index(d: &Dialog) -> Option<usize> {
+    let g = d.fields.get("group").and_then(Value::as_str)?;
+    groups(d).iter().position(|x| group_name(x) == g)
+}
+
+/// The edits the Color Groups list makes to the document's groups (`recolor.apply`'s
+/// `groupEdits`: groups deleted, saved with changes or new), and the active group as `recolor.apply`
+/// rewrites it: its name in the document (a new group's name as it is added) and its new name.
+fn group_plan(d: &Dialog) -> (Vec<Value>, Option<(String, Option<String>)>) {
+    let list = groups(d);
+    let active = active_index(d);
+    let mut edits: Vec<Value> = vec![];
+    let origs = d.fields.get("__origGroups").and_then(Value::as_array).cloned().unwrap_or_default();
+    for o in origs.iter().filter_map(Value::as_str) {
+        if !list.iter().any(|g| g["orig"].as_str() == Some(o)) {
+            edits.push(json!({"group": o, "delete": true}));
+        }
+    }
+    for (_, g) in list.iter().enumerate().filter(|(i, _)| Some(*i) != active) {
+        match g["orig"].as_str() {
+            Some(o) if g["dirty"].as_bool() == Some(true) => edits.push(json!({"group": o, "name": g["name"], "colors": g["colors"]})),
+            None => edits.push(json!({"name": g["name"], "colors": g["colors"]})),
+            _ => {}
+        }
+    }
+    let active = active.and_then(|i| list.get(i)).map(|g| {
+        let doc_name = match g["orig"].as_str() {
+            Some(o) => o.to_string(),
+            None => {
+                // A new group: added empty, then rewritten with the colours like any other.
+                edits.push(json!({"name": g["name"], "colors": []}));
+                group_name(g).to_string()
+            }
+        };
+        let name = d.fields.get("groupName").and_then(Value::as_str).unwrap_or_default().to_string();
+        let rename = (!name.trim().is_empty() && name != doc_name).then_some(name);
+        (doc_name, rename)
+    });
+    (edits, active)
+}
+
+/// What the buttons and the list of the Color Groups column do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupAction {
+    /// Make the group at this place in the list the active group: its colours become the rows' new
+    /// colours.
+    Pick(usize),
+    /// Back to the art's own colours, without an active group.
+    FromArt,
+    /// A new group of the rows' new colours (excluded rows left out), made the active group.
+    New,
+    /// The active group takes the new colours (and the Color Group name).
+    Save,
+    /// Remove the active group from the list.
+    Delete,
+}
+
+pub(crate) fn group_action(app: &VectorcraftApp, d: &mut Dialog, a: GroupAction) {
+    let mut list = groups(d);
+    let active = active_index(d);
+    match a {
+        GroupAction::Pick(i) => {
+            let Some(g) = list.get(i) else { return };
+            let colors = g["colors"].as_array().cloned().unwrap_or_default();
+            d.fields.insert("group".into(), g["name"].clone());
+            d.fields.insert("groupName".into(), g["name"].clone());
+            d.fields.insert("__newGroup".into(), json!(false));
+            if d.bool("__art") {
+                // As many rows as the group has colours; `sync` reduces and pairs them.
+                d.fields.insert("colors".into(), json!(colors.len().max(1)));
+                d.fields.insert("__assign".into(), Value::Array(colors));
+                d.fields.remove(REDUCED);
+            } else {
+                let mut rs: Vec<Value> = colors.iter().map(|k| json!({"from": [k], "to": k})).collect();
+                snap(app, d, &mut rs);
+                d.fields.insert("__assign".into(), Value::Array(colors));
+                d.fields.insert("rows".into(), Value::Array(rs));
+            }
+            d.fields.insert("__sel".into(), json!([]));
+        }
+        GroupAction::FromArt => {
+            for k in ["group", "groupName", "colors"] {
+                d.fields.insert(k.into(), Value::Null);
+            }
+            d.fields.insert("__assign".into(), json!([]));
+            d.fields.remove(REDUCED);
+        }
+        GroupAction::New => {
+            let mut rs = rows(d);
+            let mut colors = vec![];
+            for r in rs.iter_mut() {
+                if excluded(r) || r["to"].is_null() {
+                    if let Some(o) = r.as_object_mut() {
+                        o.remove("source");
+                    }
+                } else {
+                    r["source"] = json!(colors.len());
+                    colors.push(r["to"].clone());
+                }
+            }
+            let name = free_group_name(app, &list, NEW_GROUP);
+            list.push(json!({"name": name, "colors": colors, "orig": null}));
+            d.fields.insert("rows".into(), Value::Array(rs));
+            d.fields.insert("__groups".into(), Value::Array(list));
+            d.fields.insert("group".into(), json!(name));
+            d.fields.insert("groupName".into(), json!(name));
+            d.fields.insert("__newGroup".into(), json!(false));
+            d.fields.insert("__assign".into(), Value::Array(colors));
+            mark_reduced(d);
+        }
+        GroupAction::Save => {
+            let Some(i) = active else { return };
+            let colors = group_colors(d);
+            let Some(g) = list.get_mut(i) else { return };
+            let name =
+                d.fields.get("groupName").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).unwrap_or(group_name(g)).to_string();
+            g["name"] = json!(name);
+            g["colors"] = Value::Array(colors.clone());
+            g["dirty"] = json!(true);
+            d.fields.insert("__groups".into(), Value::Array(list));
+            d.fields.insert("group".into(), json!(name));
+            d.fields.insert("groupName".into(), json!(name));
+            d.fields.insert("__assign".into(), Value::Array(colors));
+            mark_reduced(d);
+        }
+        GroupAction::Delete => {
+            let Some(i) = active else { return };
+            list.remove(i);
+            d.fields.insert("__groups".into(), Value::Array(list));
+            d.fields.insert("group".into(), Value::Null);
+            d.fields.insert("groupName".into(), Value::Null);
+        }
+    }
+}
+
+/// `base`, or "base 2", "base 3"… unused by the list and the document's swatches.
+fn free_group_name(app: &VectorcraftApp, list: &[Value], base: &str) -> String {
+    let taken = |n: &str| list.iter().any(|g| group_name(g) == n) || app.session.active().is_some_and(|st| st.doc.swatch_name_taken(n));
+    std::iter::once(base.to_string()).chain((2..1000).map(|i| format!("{base} {i}"))).find(|n| !taken(n)).unwrap_or_else(|| base.to_string())
+}
+
 fn body(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     sync(app, d);
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(LEFT_W);
+            tabs(app, ui, d);
+        });
+        ui.add_space(14.0);
+        ui.vertical(|ui| {
+            ui.set_width(GROUPS_W);
+            groups_column(app, ui, d);
+        });
+    });
+    if d.fields.get("group").is_some_and(Value::is_string) || d.bool("__newGroup") {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tl!("Color Group:")).color(t.text_dim));
+            form::text(ui, d, "groupName", 200.0);
+        });
+    }
+    sync(app, d);
+    if d.bool("__art") {
+        form::preview(app, ui, d, "Recolor Artwork", CMD, apply_params(d));
+    }
+    false
+}
+
+/// The Color Groups column: the list (click a group to make it the active group) and its buttons.
+fn groups_column(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(tl!("Color Groups")).font(theme::semibold(12.5)));
+    ui.add_space(6.0);
+    let list = groups(d);
+    let active = active_index(d);
+    let mut action = None;
+    widgets::list_box(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("recolor-groups").max_height(TAB_H - 70.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(TAB_H - 70.0);
+            for (i, g) in list.iter().enumerate() {
+                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), GROUP_ROW_H), Sense::hover());
+                let resp = ui.interact(r, egui::Id::new(("recolor-group", i)), Sense::click());
+                if Some(i) == active {
+                    ui.painter().rect_filled(r, 2.0, t.row_selected);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(r, 2.0, t.hover);
+                }
+                // Group names are the user's: shown as they are.
+                let font = egui::FontId::proportional(11.5);
+                ui.painter().text(r.left_top() + vec2(6.0, 3.0), egui::Align2::LEFT_TOP, group_name(g), font, t.text);
+                let colors: Vec<Color> = g["colors"].as_array().map(|a| a.iter().filter_map(color_value).collect()).unwrap_or_default();
+                let fit = ((r.width() - 12.0) / (GROUP_CHIP + 2.0)).max(1.0) as usize;
+                for (j, c) in colors.iter().take(fit).enumerate() {
+                    let x = r.left() + 6.0 + j as f32 * (GROUP_CHIP + 2.0);
+                    chip(ui, Rect::from_min_size(pos2(x, r.bottom() - GROUP_CHIP - 4.0), vec2(GROUP_CHIP, GROUP_CHIP)), *c, false);
+                }
+                if resp.on_hover_text(group_name(g)).clicked() {
+                    action = Some(GroupAction::Pick(i));
+                }
+            }
+        });
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let (art, has) = (d.bool("__art"), active.is_some());
+        let buttons = [
+            ("pipette", tl!("Get Colors from Selected Art"), art, GroupAction::FromArt),
+            ("dc-folder", tl!("New Color Group"), true, GroupAction::New),
+            ("save", tl!("Save Changes to Color Group"), has, GroupAction::Save),
+            ("trash-2", tl!("Delete Color Group"), has, GroupAction::Delete),
+        ];
+        for (icon, tip, on, a) in buttons {
+            if widgets::icon_button_enabled(ui, icon, tip, false, on, 24.0).clicked() {
+                action = Some(a);
+            }
+        }
+    });
+    if let Some(a) = action {
+        group_action(app, d, a);
+    }
+}
+
+/// The Assign and Edit tabs, with the preset menu above them.
+fn tabs(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         let tab = d.str("tab");
@@ -232,18 +526,6 @@ fn body(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         snap(app, d, &mut rs);
         d.fields.insert("rows".into(), Value::Array(rs));
     }
-    if d.fields.get("group").is_some_and(Value::is_string) || d.bool("__newGroup") {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tl!("Color Group:")).color(t.text_dim));
-            form::text(ui, d, "groupName", 200.0);
-        });
-    }
-    sync(app, d);
-    if d.bool("__art") {
-        form::preview(app, ui, d, "Recolor Artwork", CMD, apply_params(d));
-    }
-    false
 }
 
 /// OK: keep the previewed recolour as one undo step (or apply it, e.g. to a colour group only; or
@@ -253,7 +535,14 @@ fn confirm(app: &mut VectorcraftApp, d: &Dialog) -> Result<Value, String> {
     sync(app, &mut d);
     if d.bool("__newGroup") {
         let colors: Vec<Value> = rows(&d).into_iter().filter(|r| !excluded(r)).map(|r| r["to"].clone()).collect();
-        return form::commit_preview(app, "swatch.newGroup", json!({"name": d.str("groupName"), "colors": colors}));
+        let new = json!({"name": d.str("groupName"), "colors": colors});
+        let (mut edits, _) = group_plan(&d);
+        if edits.is_empty() {
+            return form::commit_preview(app, "swatch.newGroup", new);
+        }
+        // With changes to the Color Groups list, the new group is made with them.
+        edits.push(new);
+        return form::commit_preview(app, CMD, json!({"map": [], "groupEdits": edits}));
     }
     form::commit_preview(app, CMD, apply_params(&d))
 }
@@ -412,7 +701,13 @@ fn assign_tab(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog, rows: &mut 
                 let p = json!({"map": rows, "order": !sb, "saturationBrightness": sb, "seed": seed});
                 match app.session.execute("recolor.randomize", &p) {
                     Ok(r) => {
-                        *rows = r["map"].as_array().cloned().unwrap_or_default();
+                        // The rows keep the group colour each took.
+                        let old = std::mem::replace(rows, r["map"].as_array().cloned().unwrap_or_default());
+                        for (n, o) in rows.iter_mut().zip(&old) {
+                            if let Some(src) = o.get("source").filter(|v| !v.is_null()) {
+                                n["source"] = src.clone();
+                            }
+                        }
                         changed = true;
                     }
                     Err(e) => app.status(e.to_string()),
@@ -420,7 +715,7 @@ fn assign_tab(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog, rows: &mut 
             }
         }
         if widgets::icon_button(ui, "rotate-ccw", tl!("Reset the rows to the artwork's colors"), false, 24.0).clicked() {
-            d.fields.remove("__reduced");
+            d.fields.remove(REDUCED);
         }
     });
     ui.add_space(8.0);
@@ -432,6 +727,15 @@ fn assign_tab(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog, rows: &mut 
             d.fields.insert("method".into(), json!(Method::ALL[i].id()));
         }
         ui.end_row();
+        // The rows' order, and how a group's colours pair with them.
+        if d.bool("__art") {
+            ui.label(egui::RichText::new(tl!("Sort:")).color(t.text_dim));
+            let labels: Vec<&str> = Sort::ALL.iter().map(|s| s.label()).collect();
+            if let Some(i) = widgets::dropdown(ui, "recolor-sort", sort(d).label(), &labels, 180.0) {
+                d.fields.insert("sort".into(), json!(Sort::ALL[i].id()));
+            }
+            ui.end_row();
+        }
         ui.label(egui::RichText::new(tl!("Limit to Library:")).color(t.text_dim));
         // None, the document's swatches, then the colour libraries: the built-in ones (at the top
         // level of the library menu) translated, those the user saved or loaded by their names.

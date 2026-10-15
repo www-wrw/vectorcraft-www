@@ -316,3 +316,74 @@ fn cmyk_object_reads_one_scale_for_every_component() {
     assert!(close(k(json!({"c": 0.1, "m": 0.5, "y": 0.9, "k": 0.2})), [0.1, 0.5, 0.9, 0.2]));
     assert!(close(k(json!({"c": 0, "m": 1, "y": 1, "k": 0})), [0.0, 1.0, 1.0, 0.0]));
 }
+
+fn group_hexes(s: &Session, name: &str) -> Vec<String> {
+    let g = s.doc().unwrap().doc.swatch_groups.iter().find(|g| g.name == name).unwrap_or_else(|| panic!("no group {name}"));
+    g.swatches.iter().filter_map(|w| w.paint.color()).map(|c| c.to_hex()).collect()
+}
+
+#[test]
+fn reduce_sorts_rows_and_pairs_a_groups_colours_by_lightness() {
+    let mut s = session();
+    let (light, mid, dark) = (rect(&mut s, json!("#f0c0c0")), rect(&mut s, json!("#c04040")), rect(&mut s, json!("#400000")));
+    select_all(&mut s);
+    let r = run(&mut s, "recolor.reduce", json!({"sort": "darkToLight", "preserve": {"white": false, "black": false}}));
+    let tos: Vec<String> = r["map"].as_array().unwrap().iter().map(|r| color_value(&r["to"]).unwrap().to_hex()).collect();
+    assert_eq!(tos, ["#400000", "#c04040", "#f0c0c0"], "rows dark to light");
+    assert_eq!(r["sort"], "darkToLight");
+    // A group listed light to dark: each row takes the group colour of its own lightness.
+    let group = json!(["#e0e0ff", "#8080c0", "#202060"]);
+    let r = run(&mut s, "recolor.reduce", json!({"sort": "lightToDark", "assign": group, "preserve": {"white": false, "black": false}}));
+    let map = r["map"].as_array().unwrap();
+    assert_eq!(map.iter().map(|r| r["source"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 1, 2]);
+    run(&mut s, "recolor.apply", json!({"map": map, "method": "exact"}));
+    assert_eq!([fill(&s, light), fill(&s, mid), fill(&s, dark)].map(|c| c.to_hex()), ["#e0e0ff", "#8080c0", "#202060"]);
+    // Without a sort the k-th row (most used first; here the art's order) takes the k-th colour.
+    run(&mut s, "edit.undo", json!({}));
+    let r = run(&mut s, "recolor.reduce", json!({"assign": ["#202060"], "preserve": {"white": false, "black": false}}));
+    let sources: Vec<Value> = r["map"].as_array().unwrap().iter().map(|r| r["source"].clone()).collect();
+    assert_eq!(sources, [json!(0), Value::Null, Value::Null], "a row past the last colour keeps its own");
+    assert!(s.execute("recolor.reduce", &json!({"sort": "sideways"})).is_err());
+    assert!(s.execute("recolor.reduce", &json!({"assign": "red"})).is_err());
+}
+
+#[test]
+fn apply_adds_rewrites_and_deletes_colour_groups_in_one_undo_step() {
+    let mut s = session();
+    let a = rect(&mut s, json!("#ff0000"));
+    select_all(&mut s);
+    run(&mut s, "swatch.newGroup", json!({"name": "Old", "colors": ["#111111", "#222222"]}));
+    run(&mut s, "swatch.newGroup", json!({"name": "Keep", "colors": ["#333333"]}));
+    let groups = |s: &Session| s.doc().unwrap().doc.swatch_groups.iter().map(|g| g.name.clone()).collect::<Vec<_>>();
+    let before = groups(&s);
+    let undo = s.doc().unwrap().history.undo.len();
+    let r = run(
+        &mut s,
+        "recolor.apply",
+        json!({
+            "map": [{"from": ["#ff0000"], "to": "#00ff00"}],
+            "groupEdits": [
+                {"group": "Old", "delete": true},
+                {"group": "Keep", "name": "Kept", "colors": ["#444444"]},
+                {"name": "Kept", "colors": ["#00ff00", "#0000ff"]},
+            ],
+            "group": "Kept 2", "groupColors": ["#00ff00", "#000080"],
+        }),
+    );
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+    assert_eq!(fill(&s, a).to_hex(), "#00ff00");
+    assert!(!groups(&s).contains(&"Old".to_string()));
+    assert_eq!(group_hexes(&s, "Kept"), ["#444444"]);
+    // The new group asked for "Kept" got "Kept 2" (the rename took "Kept"); `group` then rewrote it.
+    assert_eq!(r["groups"]["Kept"], "Kept 2");
+    assert_eq!(group_hexes(&s, "Kept 2"), ["#00ff00", "#000080"]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(groups(&s), before);
+    assert_eq!(fill(&s, a).to_hex(), "#ff0000");
+    // Group edits alone need no art.
+    run(&mut s, "select.none", json!({}));
+    run(&mut s, "recolor.apply", json!({"map": [], "groupEdits": [{"group": "Keep", "delete": true}]}));
+    assert!(!groups(&s).contains(&"Keep".to_string()));
+    assert!(s.execute("recolor.apply", &json!({"map": [], "groupEdits": [{"delete": true}]})).is_err());
+    assert!(s.execute("recolor.apply", &json!({"map": [], "groupEdits": [{"group": "Nope", "delete": true}]})).is_err());
+}

@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last updated:** 2026-10-13 · **Change:** synthetic input budgets (#1709); bounded transport waits (#1726).
+> **Last updated:** 2026-10-14 · **Change:** Recolor Artwork's Color Groups column and Sort field; earlier: synthetic input budgets (#1709); bounded transport waits (#1726).
 
 `vectorcraft --control <port>` listens on `127.0.0.1:<port>` (loopback only). The port must be a number
 from 1 to 65535 (`--control=<port>` works too), given once; otherwise the app prints an error and exits
@@ -220,11 +220,17 @@ Recolor Artwork: `ui.recolorDialog {colors?, library?, group?}` opens the `recol
 (`colors`: a count for an n-colour job, or colours to assign as the new colours; `library`: Limit to Library, a library
 or `"document"`, `""` for the first library; `group`: a colour group, Edit or Apply Color Group). Fields: `rows` (`[{from: [keys], to: key, exclude?}]`
 as `recolor.reduce` returns them), `colors` (null for Auto), `method`, `preserveWhite`, `preserveBlack`,
-`preserveGrays`, `limitTo`, `groupName`, `tab` (`assign` or `edit`), `rule` (harmony id), `linked`, `preview`. Setting
-`colors`, a preserve flag or `limitTo` reduces the rows again (also on `ui.dialog.confirm`). The dialog previews
-`recolor.apply` on the canvas; confirm keeps it as one undo step (with a group, the group is rewritten in the same
-step; with no art selected only the group changes). In the Swatches panel, double-clicking a colour group's folder,
-or the options button while a group is selected, opens it.
+`preserveGrays`, `limitTo`, `groupName`, `tab` (`assign` or `edit`), `rule` (harmony id), `linked`, `preview`, `sort`
+(`none`, `hueForward`, `hueBackward`, `darkToLight`, `lightToDark`: the rows' order, and how the active group's colours
+pair with them), `group` (the active colour group). A row may carry `source`, the index of the active group's colour
+it took. Setting `colors`, a preserve flag, `limitTo` or `sort` reduces the rows again (also on `ui.dialog.confirm`).
+The Color Groups column beside the tabs lists the document's colour groups (field `__groups`: `[{name, colors, orig}]`);
+clicking one makes it the active group (its colours become the rows' new colours), and its buttons get the art's own
+colours back, add a group of the new colours, save the new colours into the active group and delete it. The list's
+changes are made on confirm, through `recolor.apply`'s `groupEdits`. The dialog previews `recolor.apply` on the
+canvas; confirm keeps it as one undo step (with a group, the group is rewritten in the same step; with no art
+selected only the groups change). In the Swatches panel, double-clicking a colour group's folder, or the options
+button while a group is selected, opens it.
 
 Library panel: `engine.execute {command: "window.swatchLibrary", params: {library}}` opens the read-only library
 panel on a swatch library (`ui.inspect` shows it as `library_panel: {kind, id}`; `library: null` closes it).

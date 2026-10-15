@@ -3957,3 +3957,12 @@ lighting	Light	光源
 	Softness	柔和度
 	Ambient Light	环境光
 	Light behind the object	光源位于对象后方
+	Color Groups	颜色组
+	Get Colors from Selected Art	从所选图稿获取颜色
+	Save Changes to Color Group	将更改保存到颜色组
+	Delete Color Group	删除颜色组
+	Sort:	排序：
+	Hue - forward	色相 - 正向
+	Hue - backward	色相 - 反向
+	Lightness - dark to light	明度 - 从暗到亮
+	Lightness - light to dark	明度 - 从亮到暗
