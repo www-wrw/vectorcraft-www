@@ -387,3 +387,28 @@ fn apply_adds_rewrites_and_deletes_colour_groups_in_one_undo_step() {
     assert!(s.execute("recolor.apply", &json!({"map": [], "groupEdits": [{"delete": true}]})).is_err());
     assert!(s.execute("recolor.apply", &json!({"map": [], "groupEdits": [{"group": "Nope", "delete": true}]})).is_err());
 }
+
+#[test]
+fn randomize_draws_from_a_whole_palette() {
+    let s = &mut session();
+    let map = json!([{"from": ["#ff0000"], "to": "#111111"}, {"from": ["#00ff00"], "to": "#222222"}, {"from": ["#0000ff"], "to": "#333333", "exclude": true}]);
+    let palette = ["#111111", "#222222", "#aa0000", "#00aa00", "#0000aa"];
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..40 {
+        let r = run(s, "recolor.randomize", json!({"map": map, "palette": palette, "seed": seed}));
+        let rows = r["map"].as_array().unwrap();
+        let (a, b) = (color_value(&rows[0]["to"]).unwrap().to_hex(), color_value(&rows[1]["to"]).unwrap().to_hex());
+        assert_ne!(a, b, "two rows take two different colours while the palette lasts");
+        for row in &rows[..2] {
+            let j = row["source"].as_u64().unwrap() as usize;
+            assert_eq!(color_value(&row["to"]).unwrap().to_hex(), palette[j]);
+        }
+        assert_eq!(color_value(&rows[2]["to"]).unwrap().to_hex(), "#333333", "an excluded row keeps its colour");
+        seen.extend([a, b]);
+    }
+    assert_eq!(seen.len(), 5, "every palette colour comes up: {seen:?}");
+    // More rows than colours: they repeat. A bad palette is refused.
+    let r = run(s, "recolor.randomize", json!({"map": map, "palette": ["#123456"], "seed": 1}));
+    assert_eq!(r["map"][1]["to"], r["map"][0]["to"]);
+    assert!(s.execute("recolor.randomize", &json!({"map": map, "palette": "red"})).is_err());
+}
