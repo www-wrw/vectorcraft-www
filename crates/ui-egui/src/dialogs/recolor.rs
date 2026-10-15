@@ -423,8 +423,7 @@ fn body(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             ui.set_width(LEFT_W);
             tabs(app, ui, d);
         });
-        ui.add_space(8.0);
-        ui.separator();
+        ui.add_space(14.0);
         ui.vertical(|ui| {
             ui.set_width(GROUPS_W);
             groups_column(app, ui, d);
